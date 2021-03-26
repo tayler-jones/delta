@@ -50,4 +50,5 @@ class DeleteSQLSuite extends DeleteSuiteBase  with DeltaSQLCommandTest {
       }
     }
   }
+
 }

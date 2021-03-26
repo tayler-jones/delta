@@ -289,6 +289,13 @@ class DeltaAnalysis(session: SparkSession, conf: SQLConf)
     Alias(CreateStruct(fields), parent.name)(
       parent.exprId, parent.qualifier, Option(parent.metadata))
   }
+
+  private def stripTempViewWrapper(plan: LogicalPlan): LogicalPlan = {
+    plan
+      .transformUp {
+        case v: View if v.isTempView => v.child
+      }
+  }
 }
 
 /** Matchers for dealing with a Delta table. */

@@ -71,7 +71,7 @@ class MergeIntoSQLSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
       mergeClauses: MergeClause*)(
       result: Seq[(Int, Int)]): Unit = {
     Seq(true, false).foreach { isPartitioned =>
-      ignore(s"unlimited clauses - $name - isPartitioned: $isPartitioned ") {
+      test(s"unlimited clauses - $name - isPartitioned: $isPartitioned ") {
         withKeyValueData(source, target, isPartitioned) { case (sourceName, targetName) =>
           withSQLConf(DeltaSQLConf.MERGE_INSERT_ONLY_ENABLED.key -> "true") {
             executeMerge(s"$targetName t", s"$sourceName s", mergeOn, mergeClauses: _*)
@@ -253,61 +253,72 @@ class MergeIntoSQLSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
     }
   }
 
-  // TODO: remove after Delta runs on Spark 3.1 which has unlimited clause support
-  test("negative case - too many clauses") {
-    withTable("source") {
-      Seq((1, 1), (0, 3)).toDF("srcKey", "srcValue").write.saveAsTable("source")
-      append(Seq((2, 2), (1, 4)).toDF("trgKey", "trgValue"))
+  test("merge into a dataset temp view") {
+    withTable("tab") {
+      withTempView("v") {
+        withTempView("src") {
+          Seq((0, 3), (1, 2)).toDF("key", "value").write.format("delta").saveAsTable("tab")
+          spark.table("tab").as("name").createTempView("v")
+          sql("CREATE TEMP VIEW src AS SELECT * FROM VALUES (1, 2), (3, 4) AS t(a, b)")
+          sql(
+            s"""
+               |MERGE INTO v
+               |USING src
+               |ON src.a = v.key AND src.b = v.value
+               |WHEN MATCHED THEN
+               |  UPDATE SET v.value = src.b + 1
+               |WHEN NOT MATCHED THEN
+               |  INSERT (v.key, v.value) VALUES (src.a, src.b)
+               |""".stripMargin)
+          checkAnswer(spark.table("tab"), Seq(Row(0, 3), Row(1, 3), Row(3, 4)))
+        }
+      }
+    }
+  }
 
-      // More than 2 match clauses are not allowed
-      var e = intercept[ParseException](
-        sql(s"""
-          |MERGE INTO delta.`$tempPath`
-          |USING source
-          |ON srcKey = trgKey
-          |WHEN MATCHED AND trgKey = 1 THEN
-          |  UPDATE SET trgKey = srcKey, trgValue = srcValue
-          |WHEN MATCHED AND trgValue = 2 THEN
-          |  UPDATE SET trgKey = srcKey, trgValue = srcValue + 1
-          |WHEN MATCHED AND trgValue = 3 THEN
-          |  DELETE
-          |WHEN NOT MATCHED THEN
-          |  INSERT (trgValue, trgKey) VALUES (srcValue, srcKey)
-        """.stripMargin))
-      assert(e.getMessage.contains("There must be at most two match clauses in a MERGE query") ||
-        e.getMessage.contains("There should be at most 2 'WHEN MATCHED' clauses"))
+  ignore("merge into a SQL temp view") {
+    withTable("tab") {
+      withTempView("v") {
+        withTempView("src") {
+          Seq((0, 3), (1, 2)).toDF("key", "value").write.format("delta").saveAsTable("tab")
+          sql("CREATE TEMP VIEW v AS SELECT * FROM tab")
+          sql("CREATE TEMP VIEW src AS SELECT * FROM VALUES (1, 2), (3, 4) AS t(a, b)")
+          sql(
+            s"""
+               |MERGE INTO v
+               |USING src
+               |ON src.a = v.key AND src.b = v.value
+               |WHEN MATCHED THEN
+               |  UPDATE SET v.value = src.b + 1
+               |WHEN NOT MATCHED THEN
+               |  INSERT (v.key, v.value) VALUES (src.a, src.b)
+               |""".stripMargin)
+          checkAnswer(spark.table("tab"), Seq(Row(0, 3), Row(1, 3), Row(3, 4)))
+        }
+      }
+    }
+  }
 
-      // Multiple update actions not allowed
-      e = intercept[ParseException](
-        sql(s"""
-          |MERGE INTO delta.`$tempPath`
-          |USING source
-          |ON srcKey = trgKey
-          |WHEN MATCHED AND trgKey = 1 THEN
-          |  UPDATE SET trgKey = srcKey, trgValue = srcValue
-          |WHEN MATCHED AND trgValue = 2 THEN
-          |  UPDATE SET trgKey = srcKey, trgValue = srcValue + 1
-          |WHEN NOT MATCHED THEN
-          |  INSERT (trgValue, trgKey) VALUES (srcValue, srcKey)
-        """.stripMargin))
-      assert(e.getMessage.contains("INSERT, UPDATE and DELETE cannot appear twice") ||
-        e.getMessage.contains("UPDATE and DELETE can appear at most once in MATCHED clauses"))
-
-      // Multiple delete actions not allowed
-      e = intercept[ParseException](
-        sql(s"""
-          |MERGE INTO delta.`$tempPath`
-          |USING source
-          |ON srcKey = trgKey
-          |WHEN MATCHED AND trgKey = 1 THEN
-          |  DELETE
-          |WHEN MATCHED AND trgValue = 2 THEN
-          |  DELETE
-          |WHEN NOT MATCHED THEN
-          |  INSERT (trgValue, trgKey) VALUES (srcValue, srcKey)
-        """.stripMargin))
-      assert(e.getMessage.contains("INSERT, UPDATE and DELETE cannot appear twice") ||
-        e.getMessage.contains("UPDATE and DELETE can appear at most once in MATCHED clauses"))
+  // This test is to capture the incorrect behavior caused by
+  // https://github.com/delta-io/delta/issues/618 .
+  // If this test fails then the issue has been fixed. Replace this test with a correct test
+  test("merge into a dataset temp views with star gives incorrect results") {
+    withTempView("v") {
+      withTempView("src") {
+        append(Seq((0, 0), (1, 1)).toDF("key", "value"))
+        readDeltaTable(tempPath).createOrReplaceTempView("v")
+        sql("CREATE TEMP VIEW src AS SELECT * FROM VALUES (10, 1) AS t(value, key)")
+        sql(s"""MERGE INTO v USING src
+             |ON src.key = v.key
+             |WHEN MATCHED THEN
+             |  UPDATE SET *
+             |WHEN NOT MATCHED THEN
+             |  INSERT *
+             |""".stripMargin)
+        val result = readDeltaTable(tempPath).as[(Long, Long)].collect().toSet
+        // This is expected to fail until the issue mentioned above is resolved.
+        assert(result != Set((0, 0), (1, 10)))
+      }
     }
   }
 }

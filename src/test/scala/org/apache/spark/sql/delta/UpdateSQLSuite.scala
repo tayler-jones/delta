@@ -52,6 +52,18 @@ class UpdateSQLSuite extends UpdateSuiteBase  with DeltaSQLCommandTest {
       errMsgs = "There is a conflict from these SET columns" :: Nil)
   }
 
+  test("update a dataset temp view") {
+    withTable("tab") {
+      withTempView("v") {
+        Seq((0, 3)).toDF("key", "value").write.format("delta").saveAsTable("tab")
+        spark.table("tab").as("name").createTempView("v")
+        sql("UPDATE v SET key = 1 WHERE key = 0 AND value = 3")
+        checkAnswer(spark.table("tab"), Row(1, 3))
+      }
+    }
+  }
+
+
   override protected def executeUpdate(
       target: String,
       set: String,
