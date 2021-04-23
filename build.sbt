@@ -45,7 +45,7 @@ libraryDependencies ++= Seq(
 
 antlr4Settings
 
-antlr4Version in Antlr4 := "4.7"
+antlr4Version in Antlr4 := "4.8-1"
 
 antlr4PackageName in Antlr4 := Some("io.delta.sql.parser")
 
